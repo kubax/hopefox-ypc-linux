@@ -39,3 +39,9 @@ The project was developed mostly through iterative trial and error with real har
 packet observations, repeated protocol tests and AI-assisted analysis/coding. The
 implementation should therefore be treated as practical experimental software rather
 than a formal specification of every camera revision.
+
+## Saved media follows auto-rotation
+
+Confirmed client behaviour: when auto-rotation is enabled, photos and local
+recordings use the same orientation correction and circular viewport as the
+live preview. The recording mode remains fixed for the entire recording.

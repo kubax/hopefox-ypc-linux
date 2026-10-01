@@ -13,7 +13,7 @@ import threading
 import time
 from collections import deque
 
-from PySide6.QtCore import QObject, Qt, Signal, QTimer, QRectF
+from PySide6.QtCore import QObject, Qt, Signal, QTimer, QRectF, QBuffer, QByteArray, QIODevice
 from PySide6.QtGui import QImage, QPixmap, QPainter, QPainterPath
 from PySide6.QtWidgets import (
     QApplication,
@@ -67,6 +67,7 @@ class Signals(QObject):
     frame = Signal(bytes)
     status = Signal(str)
     stats = Signal(str)
+    recording_state = Signal(bool)
 
 
 # ======================================================================
@@ -233,11 +234,13 @@ class SoulearCamera:
         self.record_ffmpeg = None
         self.record_lock = threading.Lock()
         self.record_fps = 20
+        self.record_auto_rotate = False
 
         self.frame_count = 0
         self.dropped_frames = 0
         self.nack_count = 0
         self.last_jpeg = None
+        self.last_jpeg_angle = None
 
         # Track the actual dimensions encoded in the JPEG SOF marker.
         # The proprietary transport header advertises 640x480 on the tested
@@ -687,6 +690,56 @@ class SoulearCamera:
         return True
 
     # ------------------------------------------------------------------
+    # Export image transformation
+    # ------------------------------------------------------------------
+
+    def _transform_jpeg_for_export(self, jpeg, camera_angle):
+        """Return the preview-style rotated/circular JPEG for file export.
+
+        The angle belongs to the same completed camera frame as *jpeg*.
+        JPEG has no alpha channel, therefore pixels outside the circular
+        viewport are rendered black.
+        """
+        if camera_angle is None:
+            return jpeg
+
+        image = QImage.fromData(jpeg, "JPEG")
+        if image.isNull():
+            self.log("EXPORT_ROTATE: JPEG konnte nicht dekodiert werden")
+            return jpeg
+
+        side = min(image.width(), image.height())
+        output = QImage(side, side, QImage.Format_RGB32)
+        output.fill(Qt.black)
+
+        painter = QPainter(output)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+
+        clip = QPainterPath()
+        clip.addEllipse(QRectF(0.0, 0.0, float(side), float(side)))
+        painter.setClipPath(clip)
+        painter.translate(side / 2.0, side / 2.0)
+        painter.rotate(-float(camera_angle))
+        painter.drawImage(
+            int(-image.width() / 2),
+            int(-image.height() / 2),
+            image,
+        )
+        painter.end()
+
+        encoded = QByteArray()
+        buffer = QBuffer(encoded)
+        if not buffer.open(QIODevice.WriteOnly):
+            self.log("EXPORT_ROTATE: QBuffer konnte nicht geöffnet werden")
+            return jpeg
+        ok = output.save(buffer, "JPEG", 95)
+        buffer.close()
+        if not ok:
+            self.log("EXPORT_ROTATE: JPEG-Encoding fehlgeschlagen")
+            return jpeg
+        return bytes(encoded)
+
+    # ------------------------------------------------------------------
     # Camera recording state (native proRecordStatusSync)
     # ------------------------------------------------------------------
 
@@ -768,6 +821,10 @@ class SoulearCamera:
                 self.log("RECORD_START: Aufnahme läuft bereits")
                 return False
 
+            # Freeze export orientation mode for the whole recording.
+            # The GUI also locks the toggle while recording.
+            self.record_auto_rotate = bool(self.auto_rotate)
+
             # Optional firmware status sync.  Some related models support it;
             # this Soulear firmware currently answers with result code 2.
             self.record_remote_active = self.camera_record_status_sync(True)
@@ -796,9 +853,11 @@ class SoulearCamera:
                 "-vcodec", "mjpeg",
                 "-i", "pipe:0",
                 "-an",
-                "-c:v", "copy",
-                output,
             ]
+            # Input is MJPEG in both modes. Auto-rotation re-encodes each
+            # source frame once in _transform_jpeg_for_export(); ffmpeg only
+            # muxes those JPEG frames into Matroska without another encode.
+            cmd += ["-c:v", "copy", output]
 
             try:
                 proc = subprocess.Popen(
@@ -823,6 +882,7 @@ class SoulearCamera:
             self.log(
                 f"RECORD_START: lokale Datei {output}; "
                 f"Start-Preview={self.record_start_resolution}; "
+                f"auto_rotate={'ja' if self.record_auto_rotate else 'nein'}; "
                 f"remote_sync={'aktiv' if self.record_remote_active else 'nicht unterstützt'}"
             )
             return True
@@ -848,6 +908,8 @@ class SoulearCamera:
             self.camera_recording = False
             remote_was_active = self.record_remote_active
             self.record_remote_active = False
+            record_auto_rotate = self.record_auto_rotate
+            self.record_auto_rotate = False
 
             if proc is not None:
                 try:
@@ -874,12 +936,13 @@ class SoulearCamera:
                 f"Start={self.record_start_resolution}, "
                 f"gesehen={sorted(self.record_seen_resolutions)}, "
                 f"Datei={output or '-'}, "
+                f"auto_rotate={'ja' if record_auto_rotate else 'nein'}, "
                 f"remote_sync={'ja' if remote_was_active else 'unsupported'}, "
                 f"remote_stop_ack={'ja' if remote_ok else 'nein'}"
             )
             return remote_ok
 
-    def _record_jpeg(self, jpeg, width, height):
+    def _record_jpeg(self, jpeg, width, height, camera_angle=None):
         with self.record_lock:
             if not self.camera_recording:
                 return
@@ -902,8 +965,14 @@ class SoulearCamera:
             if proc is None or proc.stdin is None:
                 return
 
+            export_jpeg = (
+                self._transform_jpeg_for_export(jpeg, camera_angle)
+                if self.record_auto_rotate
+                else jpeg
+            )
+
             try:
-                proc.stdin.write(jpeg)
+                proc.stdin.write(export_jpeg)
             except (BrokenPipeError, OSError) as exc:
                 self.log(f"RECORD: ffmpeg pipe beendet: {exc}")
                 try:
@@ -1828,6 +1897,7 @@ class SoulearCamera:
         """
         self.frame_count += 1
         self.last_jpeg = jpeg
+        self.last_jpeg_angle = camera_angle
 
         transport_resolution = (int(width), int(height))
         self.last_transport_resolution = transport_resolution
@@ -1880,6 +1950,7 @@ class SoulearCamera:
             jpeg,
             jpeg_resolution[0],
             jpeg_resolution[1],
+            camera_angle,
         )
 
         #  enqueue complete JPEGs for the fixed-rate preview player.
@@ -1977,10 +2048,19 @@ class SoulearCamera:
         if self.last_jpeg is None:
             self.signals.status.emit("Noch kein Bild vorhanden")
             return
+
+        jpeg = self.last_jpeg
+        angle = self.last_jpeg_angle
+        if self.auto_rotate:
+            jpeg = self._transform_jpeg_for_export(jpeg, angle)
+
         filename = time.strftime("soulear_%Y-%m-%d_%H-%M-%S.jpg")
         with open(filename, "wb") as handle:
-            handle.write(self.last_jpeg)
-        self.signals.status.emit(f"Gespeichert: {os.path.abspath(filename)}")
+            handle.write(jpeg)
+        suffix = " (auto-rotiert)" if self.auto_rotate else ""
+        self.signals.status.emit(
+            f"Gespeichert: {os.path.abspath(filename)}{suffix}"
+        )
 
     # ------------------------------------------------------------------
     # Start / stop
@@ -2143,6 +2223,7 @@ class MainWindow(QMainWindow):
         self.signals = Signals()
         self.signals.status.connect(self.status_label.setText)
         self.signals.stats.connect(self.stats_label.setText)
+        self.signals.recording_state.connect(self.set_recording_ui_state)
 
         self.camera = SoulearCamera(
             interface=args.interface,
@@ -2178,29 +2259,39 @@ class MainWindow(QMainWindow):
     def start_recording(self):
         self.record_start_button.setEnabled(False)
         self.record_stop_button.setEnabled(True)
+        self.auto_rotate_button.setEnabled(False)
         self.status_label.setText("Starte Kamera-Recording …")
 
         def worker():
             ok = self.camera.start_video_recording()
             if ok:
+                self.signals.recording_state.emit(True)
+                mode = "auto-rotiert" if self.camera.record_auto_rotate else "original"
                 self.signals.status.emit(
-                    "Videoaufnahme gestartet – MJPEG-Stream wird lokal gespeichert …"
+                    f"Videoaufnahme gestartet – {mode}; Auto-Rotation bis zum Stop gesperrt"
                 )
             else:
                 self.signals.status.emit("Lokale Videoaufnahme konnte nicht gestartet werden")
+                self.signals.recording_state.emit(False)
 
         threading.Thread(target=worker, daemon=True).start()
 
     def stop_recording(self):
         self.record_stop_button.setEnabled(False)
-        self.record_start_button.setEnabled(True)
         self.status_label.setText("Stoppe Kamera-Recording …")
 
         def worker():
             self.camera.stop_video_recording()
             self.signals.status.emit("Recording beendet")
+            self.signals.recording_state.emit(False)
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def set_recording_ui_state(self, active):
+        active = bool(active)
+        self.record_start_button.setEnabled(not active)
+        self.record_stop_button.setEnabled(active)
+        self.auto_rotate_button.setEnabled(not active)
 
     def set_led(self, enabled):
         self.led_on_button.setEnabled(False)
@@ -2220,6 +2311,17 @@ class MainWindow(QMainWindow):
         threading.Thread(target=worker, daemon=True).start()
 
     def set_auto_rotate(self, enabled):
+        if self.camera.camera_recording:
+            # The recording pipeline freezes its orientation mode at start.
+            # Reject programmatic/user changes while the file is open too.
+            self.auto_rotate_button.blockSignals(True)
+            self.auto_rotate_button.setChecked(self.camera.auto_rotate)
+            self.auto_rotate_button.blockSignals(False)
+            self.signals.status.emit(
+                "Auto-Rotation kann während einer Videoaufnahme nicht geändert werden"
+            )
+            return
+
         self.camera.auto_rotate = bool(enabled)
         if enabled:
             self.camera.auto_rotate_zero = self.camera.last_camera_angle

@@ -34,3 +34,15 @@ When auto-rotation is enabled:
 
 The circular viewport avoids rotating black/transparent corners entering the
 visible image at intermediate angles.
+
+## Saved photos and video
+
+The same per-frame relative angle used for the live preview is associated with
+each completed JPEG frame. When auto-rotation is enabled, still images and
+recording frames are exported with the same counter-rotation and circular
+viewport as the preview.
+
+For a video recording the auto-rotation state is frozen when recording starts.
+The UI disables the toggle until the recording has stopped, and the backend
+also rejects mode changes while a recording is active. This avoids mixing
+orientation modes inside one file and keeps frame processing deterministic.

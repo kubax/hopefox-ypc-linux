@@ -32,6 +32,8 @@ confirmed.
 - circular viewport while auto-rotation is active
 - local photo capture
 - local MKV recording through `ffmpeg`
+- photos and recordings follow auto-rotation when it is enabled
+- auto-rotation is locked for the duration of an active video recording
 - stream watchdog / automatic reopen
 - camera presence keepalives
 - configurable camera, local and broadcast IPv4 addresses
@@ -108,6 +110,20 @@ If needed, override it explicitly:
 ```bash
 soulear-camera --dumpcap --interface wlan0
 ```
+
+
+## Auto-rotation and saved media
+
+Auto-rotation affects both the live preview and exported media. When enabled:
+
+- saved photos are counter-rotated with the angle belonging to that exact frame;
+- video frames are counter-rotated before they are written to the recording;
+- the same centered circular viewport used by the preview is applied to exports;
+- pixels outside the circle are black in JPEG/MJPEG output;
+- the auto-rotation setting is locked from recording start until recording stop.
+
+The recording mode is snapshotted at start, so a running file cannot switch
+between rotated and unrotated frames.
 
 ## Network model
 
