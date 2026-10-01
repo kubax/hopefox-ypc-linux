@@ -243,6 +243,7 @@ class SoulearCamera:
         # The proprietary transport header advertises 640x480 on the tested
         # YPC device while the JPEG payload itself is 480x480.
         self.last_jpeg_resolution = None
+        self.last_transport_resolution = None
 
         #  recording-style preview buffer.
         # The camera delivers frames with noticeable timing jitter (~16-17 fps).
@@ -384,8 +385,15 @@ class SoulearCamera:
             frame = self._build_synthetic_udp_frame(
                 src_ip, src_port, local_port, payload
             )
-            with self.packet_process_lock:
-                self.process_ethernet_frame(frame)
+            try:
+                with self.packet_process_lock:
+                    self.process_ethernet_frame(frame)
+            except Exception as exc:
+                if self.running:
+                    self.log(f"{label} packet processing error: {exc}")
+                    if self.debug:
+                        import traceback
+                        traceback.print_exc()
 
     def start_socket_receivers(self):
         self.receiver_threads = []
@@ -1822,6 +1830,7 @@ class SoulearCamera:
         self.last_jpeg = jpeg
 
         transport_resolution = (int(width), int(height))
+        self.last_transport_resolution = transport_resolution
         jpeg_width, jpeg_height = self.jpeg_dimensions(jpeg)
         if jpeg_width > 0 and jpeg_height > 0:
             jpeg_resolution = (jpeg_width, jpeg_height)
@@ -1904,8 +1913,8 @@ class SoulearCamera:
             else "?"
         )
         transport_res = (
-            f"{self.last_observed_resolution[0]}×{self.last_observed_resolution[1]}"
-            if self.last_observed_resolution
+            f"{self.last_transport_resolution[0]}×{self.last_transport_resolution[1]}"
+            if self.last_transport_resolution
             else "?"
         )
         self.signals.stats.emit(
