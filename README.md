@@ -1,4 +1,4 @@
-# Soulear Linux Camera
+# Hopefox YPC Linux
 
 Native Linux client for a **Hopefox-branded Soulear/YPC-compatible Wi-Fi inspection camera**.
 
