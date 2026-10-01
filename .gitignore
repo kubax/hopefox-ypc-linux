@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+*.log
+*.pcap
+*.mkv
+*.mp4
+*.jpg
+*.jpeg
+.venv/
+venv/
+dist/
+build/
+*.egg-info/
+.idea/
+.vscode/

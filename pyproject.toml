@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "soulear-linux-camera"
+version = "0.1.0"
+description = "Linux client for Soulear/YPC Wi-Fi inspection cameras"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+dependencies = [
+  "PySide6>=6.5",
+]
+
+[project.scripts]
+soulear-camera = "soulear_camera.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
