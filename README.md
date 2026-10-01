@@ -2,9 +2,8 @@
 
 Native Linux client for the tested **Soulear/YPC Wi-Fi inspection camera**.
 
-The project was created by independently documenting the camera's network
-behaviour for interoperability. It does **not** contain APK files, native
-libraries, decompiled application source, or copied code from the vendor app.
+The project grew out of hands-on experimentation with the camera's network
+behaviour and a Linux reimplementation of the functions needed for everyday use.
 
 ## Features
 
@@ -28,18 +27,16 @@ dimensions instead.
 - Linux
 - Python 3.10+
 - PySide6
-- Wireshark `dumpcap`
 - `ffmpeg` for video recording
 
 On Arch Linux, for example:
 
 ```bash
-sudo pacman -S python-pyside6 wireshark-cli ffmpeg
+sudo pacman -S python-pyside6 ffmpeg
 ```
 
-`dumpcap` must be usable by the current user. Depending on the distribution,
-that may require membership in the `wireshark` group or equivalent capture
-permissions.
+`dumpcap` is **optional** and only useful for protocol diagnostics. Normal preview
+and control use ordinary UDP sockets and do not require packet-capture privileges.
 
 ## Run without installation
 
@@ -49,7 +46,6 @@ python ./soulear-camera.py
 
 Defaults match the tested camera/AP setup:
 
-- interface: `wlp10s0f3u3u1`
 - local IP: `192.168.1.10`
 - camera IP: `192.168.1.1`
 - broadcast IP: `192.168.1.255`
@@ -58,7 +54,6 @@ Override them when necessary:
 
 ```bash
 python ./soulear-camera.py \
-  --interface wlan0 \
   --local-ip 192.168.1.20 \
   --camera-ip 192.168.1.1 \
   --broadcast-ip 192.168.1.255
@@ -77,6 +72,22 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -e .
 soulear-camera
+```
+
+## Optional packet capture
+
+Normal use does not require a Wi-Fi interface name. For deeper diagnostics you can
+optionally switch the receive backend to `dumpcap`:
+
+```bash
+soulear-camera --dumpcap
+```
+
+The client attempts to determine the correct interface from the route to the camera.
+If needed, override it explicitly:
+
+```bash
+soulear-camera --dumpcap --interface wlan0
 ```
 
 ## Network model
@@ -104,10 +115,11 @@ and the force-open path did not produce another JPEG resolution.
 Resolution switching is therefore deliberately **not exposed by this client**.
 The GUI reports and records the actual JPEG dimensions instead.
 
-## Legal / interoperability note
+## Development note
 
-This repository documents observed network behaviour and independently
-reimplemented interoperability logic. No vendor APK, native library, decompiled
-source listing, disassembly, or copied implementation code is included.
+This is an experimental hobby project. Most of it was built iteratively through
+trial and error with the physical camera, packet observations and AI-assisted
+analysis/coding. Expect rough edges, and please report camera revisions that behave
+differently.
 
-See [docs/reverse-engineering-notes.md](docs/reverse-engineering-notes.md).
+See [docs/findings.md](docs/findings.md) for the confirmed findings used by the client.

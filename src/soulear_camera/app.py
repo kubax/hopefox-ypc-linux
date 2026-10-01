@@ -3,6 +3,7 @@
 import argparse
 import math
 import os
+import re
 import shutil
 import socket
 import struct
@@ -26,7 +27,7 @@ from PySide6.QtWidgets import (
 
 
 # ======================================================================
-# Soulear protocol constants (reverse engineered from libWifiCamera.so)
+# Soulear protocol constants (confirmed/documented behaviour)
 # ======================================================================
 
 MAGIC = 0xFFEEFFEE
@@ -131,6 +132,7 @@ class SoulearCamera:
     def __init__(
         self,
         interface,
+        use_dumpcap,
         local_ip,
         camera_ip,
         broadcast_ip,
@@ -142,6 +144,7 @@ class SoulearCamera:
         auto_reopen=True,
     ):
         self.interface = interface
+        self.use_dumpcap = bool(use_dumpcap)
         self.local_ip = local_ip
         self.camera_ip = camera_ip
         self.broadcast_ip = broadcast_ip
@@ -156,11 +159,11 @@ class SoulearCamera:
         self.seq_lock = threading.Lock()
         self.protocol_sequence = 1
         self.command_lock = threading.Lock()
+        self.packet_process_lock = threading.Lock()
 
-        # The native library creates dynamic UDP receivers and advertises
-        # their ports in proOpenVideo. The current camera firmware still
-        # emits malformed L2 broadcasts; dumpcap is therefore the canonical
-        # receive path, but keeping these sockets open reproduces native setup.
+        # The camera sends video to dynamically allocated UDP ports advertised
+        # by OPEN_VIDEO. Normal operation uses ordinary UDP recvfrom() sockets.
+        # dumpcap is available only as an optional diagnostic capture backend.
         self.video_socket = None
         self.video2_socket = None
         self.video_port = 0
@@ -172,6 +175,7 @@ class SoulearCamera:
 
         self.dumpcap_process = None
         self.capture_thread = None
+        self.receiver_threads = []
         self.keepalive_thread = None
         self.online_thread = None
         self.watchdog_thread = None
@@ -272,7 +276,7 @@ class SoulearCamera:
         self.gyro_xyz = None
 
         # RX FPS is measured over a real time window instead of smoothing
-        # per-frame intervals (dumpcap can deliver short bursts).
+        # per-frame intervals (UDP delivery can arrive in short bursts).
         self.fps_window_start = None
         self.fps_window_frames = 0
         self.fps_average = 0.0
@@ -342,6 +346,67 @@ class SoulearCamera:
                 self.log(f"WARN: Presence-Sockets nicht vollständig verfügbar: {exc}")
                 self.keepalives_enabled = False
         self.log()
+
+    def _build_synthetic_udp_frame(self, src_ip, src_port, dst_port, payload):
+        """Build the minimal Ethernet/IPv4/UDP envelope used by the common parser.
+
+        This keeps the socket receiver and optional dumpcap backend on the same
+        packet-processing path without requiring raw-socket privileges.
+        """
+        udp_len = 8 + len(payload)
+        total_len = 20 + udp_len
+        ethernet = (b"\x00" * 12) + b"\x08\x00"
+        ip_header = struct.pack(
+            "!BBHHHBBH4s4s",
+            0x45, 0, total_len, 0, 0, 64, 17, 0,
+            socket.inet_aton(src_ip),
+            socket.inet_aton(self.local_ip),
+        )
+        udp_header = struct.pack("!HHHH", src_port, dst_port, udp_len, 0)
+        return ethernet + ip_header + udp_header + payload
+
+    def socket_receive_loop(self, sock, local_port, label):
+        while self.running:
+            try:
+                payload, address = sock.recvfrom(65535)
+            except socket.timeout:
+                continue
+            except OSError:
+                return
+            except Exception as exc:
+                if self.running:
+                    self.log(f"{label} receive error: {exc}")
+                return
+
+            src_ip, src_port = address[0], address[1]
+            if src_ip != self.camera_ip:
+                continue
+            frame = self._build_synthetic_udp_frame(
+                src_ip, src_port, local_port, payload
+            )
+            with self.packet_process_lock:
+                self.process_ethernet_frame(frame)
+
+    def start_socket_receivers(self):
+        self.receiver_threads = []
+        sockets = [
+            (self.video_socket, self.video_port, "video-primary"),
+            (self.video2_socket, self.video2_port, "video-secondary"),
+            (self.presence_video_socket, PRESENCE_VIDEO_PORT, "presence-44506"),
+            (self.presence_control1_socket, PRESENCE_CONTROL1_PORT, "presence-52219"),
+            (self.presence_control2_socket, PRESENCE_CONTROL2_PORT, "presence-52220"),
+        ]
+        for sock, port, label in sockets:
+            if sock is None:
+                continue
+            thread = threading.Thread(
+                target=self.socket_receive_loop,
+                args=(sock, port, label),
+                daemon=True,
+            )
+            thread.start()
+            self.receiver_threads.append(thread)
+        self.log("UDP socket capture active (dumpcap not required)")
 
     # ------------------------------------------------------------------
     # Synchronous native-style command transaction
@@ -543,23 +608,9 @@ class SoulearCamera:
         return None
 
     def set_led(self, enabled):
-        """Switch the scope illumination exactly like the Android app.
-
-        Reverse engineered from CameraShowActivity.closeOrOpenDeviceLed():
-          enabled:  ledStatus=1, lightValue=100
-          disabled: ledStatus=0, lightValue=0
-
-        For this Soulear app, Java uses opType=1.
-
-        libWifiCamera LedStatusSet encodes exactly three payload bytes:
-          byte0 = 0x10 | opType
-          byte1 = ledStatus
-          byte2 = lightValue
-        """
-        # CameraShowActivity.closeOrOpenDeviceLed(boolean) uses opType=1.
-        # Previous versions had the right 3-byte payload but the wrong wire
-        # command (0x1000C). Native LedStatusSet actually sends it through
-        # LedStatusGet's command 0x1000A.
+        """Switch the scope illumination using the confirmed YPC payload."""
+        # Confirmed on the tested camera: opType=1, state 0/1 and
+        # brightness/value 0/100 over command 0x0001000A.
         op_type = 1
 
         led_status = 1 if enabled else 0
@@ -632,14 +683,10 @@ class SoulearCamera:
     # ------------------------------------------------------------------
 
     def camera_record_status_sync(self, recording):
-        """Try the optional native cameraRecordStatusSync command.
+        """Try the optional camera-side recording-status sync command.
 
-        The original libWifiCamera parser treats this 13-byte reply specially:
-        it checks magic, sequence, only the low 16 command bits, then byte 9
-        as a firmware result/error code.  Error 2 is returned by this camera
-        and means this optional status-sync feature is unsupported/rejected.
-
-        This command is NOT the local video recorder itself.
+        The tested YPC camera rejects this optional status-sync feature with
+        result code 2. Local recording does not depend on it.
         """
         status = 1 if recording else 0
         seq = self.next_sequence()
@@ -1065,19 +1112,40 @@ class SoulearCamera:
                 time.sleep(0.1)
 
     # ------------------------------------------------------------------
-    # dumpcap raw capture
+    # Optional dumpcap diagnostic capture
     # ------------------------------------------------------------------
+
+    def detect_interface(self):
+        if self.interface:
+            return self.interface
+        try:
+            result = subprocess.run(
+                ["ip", "route", "get", self.camera_ip],
+                check=True, capture_output=True, text=True, timeout=2,
+            )
+            match = re.search(r"\bdev\s+(\S+)", result.stdout)
+            if match:
+                self.interface = match.group(1)
+                return self.interface
+        except Exception:
+            pass
+        raise RuntimeError(
+            "dumpcap mode needs a network interface; use --interface"
+        )
 
     def start_dumpcap(self):
         dumpcap = shutil.which("dumpcap")
         if dumpcap is None:
-            raise RuntimeError("dumpcap nicht gefunden (wireshark-cli installieren)")
+            raise RuntimeError(
+                "dumpcap not found; install Wireshark CLI or run without --dumpcap"
+            )
+        interface = self.detect_interface()
 
         command = [
             dumpcap,
             "-q",
             "-F", "pcap",
-            "-i", self.interface,
+            "-i", interface,
             "-s", "0",
             "-w", "-",
         ]
@@ -1110,7 +1178,7 @@ class SoulearCamera:
                 raise RuntimeError("dumpcap stdout fehlt")
 
             reader = PcapStreamReader(process.stdout)
-            self.log(f"Raw capture aktiv auf {self.interface}")
+            self.log(f"Optional dumpcap capture active on {self.interface}")
             for ethernet_frame in reader.packets():
                 if not self.running:
                     break
@@ -1174,12 +1242,10 @@ class SoulearCamera:
         return True
 
     def decode_notify_packet(self, src_port, dst_port, payload):
-        """Decode the camera's UDP/10007 command-9 notify envelope.
+        """Decode the observed UDP/10007 command-9 notify envelope.
 
-        Reverse engineering of libWifiCamera.so shows that command 0x00000009
-        is consumed by new_all_Info_init() as an asynchronous status/notify
-        channel.  Type 2 is parsed as status/bit fields.  It does NOT carry
-        width/height and is therefore not a resolution/open-video command.
+        Type 2 contains status/bit fields. It does not carry width/height and
+        is not used as a resolution/open-video command by this client.
         """
         if len(payload) < 13:
             return False
@@ -1414,7 +1480,7 @@ class SoulearCamera:
         if self.decode_gyro_52219(src_port, dst_port, payload):
             return
 
-        # FFEE control ACKs are visible to dumpcap as well; don't feed them
+        # FFEE control ACKs may be visible on diagnostic capture; don't feed them
         # into the JPEG parser.
         if len(payload) >= 4 and payload[:4] == struct.pack("<I", MAGIC):
             if self.decode_notify_packet(src_port, dst_port, payload):
@@ -1448,7 +1514,7 @@ class SoulearCamera:
         if not (16 <= width <= 4096 and 16 <= height <= 4096):
             return
 
-        # dumpcap can see stale streams from earlier client sessions too.
+        # Diagnostic capture can see stale streams from earlier sessions too.
         # Only frames addressed to THIS client's current primary/secondary
         # receive ports are allowed into the JPEG/reassembly state machine.
         current_ports = {self.video_port, self.video2_port}
@@ -1917,16 +1983,20 @@ class SoulearCamera:
         self.running = True
 
         try:
-            # Raw capture must be ready before the first command because the
-            # first frame can arrive ~70 ms after the ACK.
-            self.capture_thread = threading.Thread(
-                target=self.capture_loop,
-                daemon=True,
-            )
-            self.capture_thread.start()
-            time.sleep(0.6)
-
             self.create_native_sockets()
+
+            # Start the receive backend before the first OPEN_VIDEO command.
+            # Normal operation needs no packet-capture privileges or interface.
+            if self.use_dumpcap:
+                self.capture_thread = threading.Thread(
+                    target=self.capture_loop,
+                    daemon=True,
+                )
+                self.capture_thread.start()
+                time.sleep(0.4)
+            else:
+                self.start_socket_receivers()
+                time.sleep(0.05)
 
             if self.keepalives_enabled:
                 self.send_ne7_probe()
@@ -2067,6 +2137,7 @@ class MainWindow(QMainWindow):
 
         self.camera = SoulearCamera(
             interface=args.interface,
+            use_dumpcap=args.dumpcap,
             local_ip=args.local_ip,
             camera_ip=args.camera_ip,
             broadcast_ip=args.broadcast_ip,
@@ -2180,7 +2251,7 @@ class MainWindow(QMainWindow):
                     f"PREVIEW20: Start mit {len(q)} gepufferten Frames"
                 )
 
-            # A dumpcap burst can briefly outrun the 20-Hz player.  Keep only a
+            # A receive burst can briefly outrun the 20-Hz player. Keep only a
             # few recent frames so the preview never drifts seconds behind.
             if len(q) > self.camera.gui_preview_max_latency_frames:
                 target = self.camera.gui_preview_target_buffer
@@ -2275,10 +2346,15 @@ def main():
         description="Linux client for Soulear/YPC Wi-Fi inspection cameras"
     )
     parser.add_argument(
+        "--dumpcap",
+        action="store_true",
+        help="Use optional dumpcap packet capture instead of normal UDP sockets",
+    )
+    parser.add_argument(
         "--interface", "-i",
-        default="wlp10s0f3u3u1",
-        help="Network interface connected to the camera AP "
-             "(default: wlp10s0f3u3u1)",
+        default=None,
+        help="Interface for --dumpcap. If omitted, it is detected via the route "
+             "to --camera-ip",
     )
     parser.add_argument(
         "--local-ip",

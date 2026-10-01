@@ -1,20 +1,21 @@
 # Client architecture
 
-## Why `dumpcap` is used
+## Receive path
 
-The tested camera's network behaviour is not well served by a conventional
-single UDP receive socket in every situation. The client therefore opens the
-native-style UDP receiver ports expected by the camera while using `dumpcap`
-on the selected interface as the canonical packet capture path.
+Normal operation uses ordinary UDP sockets. The client allocates dynamic primary and
+secondary video receiver ports, advertises them with `OPEN_VIDEO`, and receives the
+video datagrams directly with `recvfrom()`. Presence sockets use the same approach.
 
-Captured Ethernet/IPv4/UDP packets are parsed in-process and filtered to the
-configured camera IP.
+For protocol diagnostics, `--dumpcap` can switch to a packet-capture backend. This is
+optional and is not required for preview, LED control, rotation or recording.
+
+Both receive backends feed the same UDP/video parser.
 
 ## Threads
 
 The client separates:
 
-- raw packet capture
+- UDP/video reception
 - keepalive traffic
 - online monitoring
 - video watchdog/reopen

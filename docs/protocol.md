@@ -1,8 +1,7 @@
 # Confirmed network protocol
 
-This document contains only protocol behaviour confirmed against the tested
-Soulear/YPC camera. It is an interoperability description, not vendor source
-code.
+This document summarizes protocol behaviour confirmed against the tested
+Soulear/YPC camera.
 
 ## Packet framing
 
