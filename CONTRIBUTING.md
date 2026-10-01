@@ -1,6 +1,6 @@
 # Contributing
 
-Contributions and test results from related Soulear/YPC camera revisions are welcome.
+Contributions and test results from related Hopefox, Soulear/YPC and apparently identical rebranded camera revisions are welcome.
 
 Useful reports include:
 

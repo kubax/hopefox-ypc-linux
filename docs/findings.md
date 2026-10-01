@@ -1,7 +1,14 @@
 # Confirmed findings
 
+## Tested device
+
+The reference device used during development is **Hopefox-branded** and identifies
+itself as a YPC camera on the network. Other visually or electronically identical
+rebrands may use the same protocol, but they have not yet been individually verified.
+
+
 This page collects the behaviours that were reproduced reliably on the tested
-Soulear/YPC camera and are used by the Linux client.
+Hopefox-branded Soulear/YPC-compatible camera used during development and are used by the Linux client.
 
 ## Working features
 

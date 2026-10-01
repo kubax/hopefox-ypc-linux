@@ -1,7 +1,7 @@
 # Confirmed network protocol
 
 This document summarizes protocol behaviour confirmed against the tested
-Soulear/YPC camera.
+Hopefox-branded Soulear/YPC-compatible camera.
 
 ## Packet framing
 

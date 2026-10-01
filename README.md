@@ -1,9 +1,28 @@
 # Soulear Linux Camera
 
-Native Linux client for the tested **Soulear/YPC Wi-Fi inspection camera**.
+Native Linux client for a **Hopefox-branded Soulear/YPC-compatible Wi-Fi inspection camera**.
+
+The hardware used for development is sold under the **Hopefox** brand and identifies
+itself as a YPC device on the network. Similar cameras are commonly sold under different
+brand names, so compatible rebrands may exist even when they are not labelled Hopefox.
 
 The project grew out of hands-on experimentation with the camera's network
 behaviour and a Linux reimplementation of the functions needed for everyday use.
+
+## Tested hardware and compatibility
+
+Confirmed working hardware:
+
+- **Brand:** Hopefox
+- **Type:** Wi-Fi inspection / ear camera
+- **Protocol family:** YPC-compatible
+- **Camera IP in the tested setup:** `192.168.1.1`
+- **Actual JPEG stream:** 480×480
+
+The exact hardware may also be sold under other brands or product names. If another
+camera exposes the same YPC-style status response and protocol/ports documented here,
+it may be compatible, but only the Hopefox-branded unit used for development is currently
+confirmed.
 
 ## Features
 

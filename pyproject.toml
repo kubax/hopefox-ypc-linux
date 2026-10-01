@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "soulear-linux-camera"
 version = "0.1.0"
-description = "Linux client for Soulear/YPC Wi-Fi inspection cameras"
+description = "Linux client for Hopefox-branded Soulear/YPC-compatible Wi-Fi inspection cameras"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
