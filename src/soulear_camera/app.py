@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QPushButton,
+    QSlider,
     QVBoxLayout,
     QWidget,
 )
@@ -2210,8 +2211,16 @@ class MainWindow(QMainWindow):
         button_layout.addWidget(self.auto_rotate_button)
         button_layout.addStretch()
 
+        self.offset_slider = QSlider(Qt.Orientation.Vertical)
+        self.offset_slider.setRange(-180, 180)
+        self.offset_slider.setEnabled(self.auto_rotate_button.isChecked())
+
+        image_layout = QHBoxLayout()
+        image_layout.addWidget(self.offset_slider)
+        image_layout.addWidget(self.image_label, stretch=1)
+
         layout = QVBoxLayout()
-        layout.addWidget(self.image_label, stretch=1)
+        layout.addLayout(image_layout, stretch=1)
         layout.addWidget(self.status_label)
         layout.addWidget(self.stats_label)
         layout.addLayout(button_layout)
@@ -2323,6 +2332,7 @@ class MainWindow(QMainWindow):
             return
 
         self.camera.auto_rotate = bool(enabled)
+        self.offset_slider.setEnabled(bool(enabled))
         if enabled:
             self.camera.auto_rotate_zero = self.camera.last_camera_angle
         else:
@@ -2414,7 +2424,7 @@ class MainWindow(QMainWindow):
             painter.setClipPath(clip)
 
             painter.translate(side / 2.0, side / 2.0)
-            painter.rotate(-float(camera_angle))
+            painter.rotate(-float(camera_angle) + self.offset_slider.value())
             painter.drawPixmap(
                 int(-pixmap.width() / 2),
                 int(-pixmap.height() / 2),
