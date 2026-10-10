@@ -2215,8 +2215,16 @@ class MainWindow(QMainWindow):
         self.offset_slider.setRange(-180, 180)
         self.offset_slider.setEnabled(self.auto_rotate_button.isChecked())
 
+        self.flip_button = QPushButton("↔")
+        self.flip_button.setCheckable(True)
+        self.flip_button.setChecked(False)
+
+        slider_layout = QVBoxLayout()
+        slider_layout.addWidget(self.offset_slider, stretch=1)
+        slider_layout.addWidget(self.flip_button)
+
         image_layout = QHBoxLayout()
-        image_layout.addWidget(self.offset_slider)
+        image_layout.addLayout(slider_layout)
         image_layout.addWidget(self.image_label, stretch=1)
 
         layout = QVBoxLayout()
@@ -2403,7 +2411,7 @@ class MainWindow(QMainWindow):
             print("Qt konnte JPEG nicht dekodieren", flush=True)
             return
 
-        pixmap = QPixmap.fromImage(image)
+        pixmap = QPixmap.fromImage(image.mirrored(self.flip_button.isChecked(), False))
 
         if (
             self.camera.auto_rotate
