@@ -2469,9 +2469,9 @@ def main():
     )
     parser.add_argument(
         "--local-ip",
-        default="192.168.1.10",
+        default=None,
         help="Local IPv4 address used for UDP sockets "
-             "(default: 192.168.1.10)",
+             "(default: detected via the route to --camera-ip)",
     )
     parser.add_argument(
         "--camera-ip", "--camera",
@@ -2497,6 +2497,17 @@ def main():
     parser.add_argument("--no-auto-reopen", action="store_true",
                         help="Disable stream watchdog reopen")
     args = parser.parse_args()
+
+    if args.local_ip is None:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect((args.camera_ip, 9))
+            args.local_ip = s.getsockname()[0]
+        except Exception:
+            print(Exception)
+            args.local_ip = "0.0.0.0"
+        finally:
+            s.close()
 
     app = QApplication(sys.argv)
     window = MainWindow(args)
