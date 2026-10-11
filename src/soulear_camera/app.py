@@ -2215,12 +2215,18 @@ class MainWindow(QMainWindow):
         self.offset_slider.setRange(-180, 180)
         self.offset_slider.setEnabled(self.auto_rotate_button.isChecked())
 
+        self.nocrop_button = QPushButton("■")
+        self.nocrop_button.setCheckable(True)
+        self.nocrop_button.setChecked(False)
+        self.nocrop_button.setEnabled(self.auto_rotate_button.isChecked())
+
         self.flip_button = QPushButton("↔")
         self.flip_button.setCheckable(True)
         self.flip_button.setChecked(False)
 
         slider_layout = QVBoxLayout()
         slider_layout.addWidget(self.offset_slider, stretch=1)
+        slider_layout.addWidget(self.nocrop_button)
         slider_layout.addWidget(self.flip_button)
 
         image_layout = QHBoxLayout()
@@ -2341,6 +2347,7 @@ class MainWindow(QMainWindow):
 
         self.camera.auto_rotate = bool(enabled)
         self.offset_slider.setEnabled(bool(enabled))
+        self.nocrop_button.setEnabled(bool(enabled))
         if enabled:
             self.camera.auto_rotate_zero = self.camera.last_camera_angle
         else:
@@ -2420,7 +2427,11 @@ class MainWindow(QMainWindow):
             #  show only the centered circular region that is guaranteed
             # to exist for every rotation.  Render into a FIXED square canvas
             # so the visible circle never changes size at 0/45/90 degrees.
-            side = min(pixmap.width(), pixmap.height())
+            if self.nocrop_button.isChecked():
+                side = 2**0.5 * max(pixmap.width(), pixmap.height())
+            else:
+                side = min(pixmap.width(), pixmap.height())
+
             rotated = QPixmap(side, side)
             rotated.fill(Qt.transparent)
 
