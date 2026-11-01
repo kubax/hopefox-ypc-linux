@@ -47,6 +47,7 @@ select = [
   "T10", # flake8-simplify
   "SIM", # isort
   "I", # mccabe
+  "ANN",
   "C90", # pycodestyle
   "E",
   "W", # pyflakes
