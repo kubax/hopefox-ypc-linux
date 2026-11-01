@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-
 import argparse
 import math
 import os
@@ -12,9 +10,19 @@ import sys
 import threading
 import time
 from collections import deque
+from importlib.metadata import version
 
-from PySide6.QtCore import QObject, Qt, Signal, QTimer, QRectF, QBuffer, QByteArray, QIODevice
-from PySide6.QtGui import QImage, QPixmap, QPainter, QPainterPath
+from PySide6.QtCore import (
+    QBuffer,
+    QByteArray,
+    QIODevice,
+    QObject,
+    QRectF,
+    Qt,
+    QTimer,
+    Signal,
+)
+from PySide6.QtGui import QImage, QPainter, QPainterPath, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,
@@ -25,6 +33,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+__version__ = version("hopefox-ypc-linux")
 
 # ======================================================================
 # Soulear protocol constants (confirmed/documented behaviour)
@@ -33,8 +42,8 @@ from PySide6.QtWidgets import (
 MAGIC = 0xFFEEFFEE
 
 CMD_CHECK_ONLINE = 0x00010001
-CMD_OPEN_VIDEO = 0x00010004          # internal proOpenVideo (normal stream)
-CMD_OPEN_VIDEO_FORCE = 0x00010016    # exported openVideoForceApi
+CMD_OPEN_VIDEO = 0x00010004  # internal proOpenVideo (normal stream)
+CMD_OPEN_VIDEO_FORCE = 0x00010016  # exported openVideoForceApi
 CMD_SET_TIME = 0x0001001A
 CMD_RECORD_STATUS_SYNC = 0x0001001B  # native proRecordStatusSync
 CMD_NACK = 0x0000000B
@@ -63,6 +72,7 @@ MAX_JPEG_SIZE = 5 * 1024 * 1024
 # Qt signals
 # ======================================================================
 
+
 class Signals(QObject):
     frame = Signal(bytes)
     status = Signal(str)
@@ -73,6 +83,7 @@ class Signals(QObject):
 # ======================================================================
 # Classic PCAP reader for dumpcap -F pcap -w -
 # ======================================================================
+
 
 class PcapStreamReader:
     def __init__(self, stream):
@@ -116,9 +127,7 @@ class PcapStreamReader:
             packet_header = self.read_exact(16)
             if packet_header is None:
                 return
-            _, _, captured_len, _ = struct.unpack(
-                self.endian + "IIII", packet_header
-            )
+            _, _, captured_len, _ = struct.unpack(self.endian + "IIII", packet_header)
             packet = self.read_exact(captured_len)
             if packet is None:
                 return
@@ -128,6 +137,7 @@ class PcapStreamReader:
 # ======================================================================
 # Soulear client
 # ======================================================================
+
 
 class SoulearCamera:
     def __init__(
@@ -269,9 +279,9 @@ class SoulearCamera:
         self.led_op_type = None
 
         self.auto_rotate = False
-        self.last_camera_angle = None          # filtered absolute angle
+        self.last_camera_angle = None  # filtered absolute angle
         self.raw_camera_angle = None
-        self.auto_rotate_zero = None           # angle at enable time
+        self.auto_rotate_zero = None  # angle at enable time
         self.angle_reject_count = 0
         self.angle_filter_alpha = 0.35
         self.angle_max_step = 20.0
@@ -362,7 +372,14 @@ class SoulearCamera:
         ethernet = (b"\x00" * 12) + b"\x08\x00"
         ip_header = struct.pack(
             "!BBHHHBBH4s4s",
-            0x45, 0, total_len, 0, 0, 64, 17, 0,
+            0x45,
+            0,
+            total_len,
+            0,
+            0,
+            64,
+            17,
+            0,
             socket.inet_aton(src_ip),
             socket.inet_aton(self.local_ip),
         )
@@ -373,7 +390,7 @@ class SoulearCamera:
         while self.running:
             try:
                 payload, address = sock.recvfrom(65535)
-            except socket.timeout:
+            except TimeoutError:
                 continue
             except OSError:
                 return
@@ -396,6 +413,7 @@ class SoulearCamera:
                     self.log(f"{label} packet processing error: {exc}")
                     if self.debug:
                         import traceback
+
                         traceback.print_exc()
 
     def start_socket_receivers(self):
@@ -451,7 +469,7 @@ class SoulearCamera:
                     try:
                         sock.sendto(packet, (self.camera_ip, destination_port))
                         response, address = sock.recvfrom(8192)
-                    except socket.timeout:
+                    except TimeoutError:
                         self.dbg(f"{label}: timeout {attempt}/{retries}")
                         continue
 
@@ -506,7 +524,7 @@ class SoulearCamera:
         if len(response) >= 12:
             payload_len = struct.unpack_from("<H", response, 10)[0]
             if payload_len == 0x80 and len(response) >= 12 + payload_len:
-                self.status_payload = response[12:12 + payload_len]
+                self.status_payload = response[12 : 12 + payload_len]
                 self.capabilities_byte = self.status_payload[124]
                 self.dual_stream = bool(self.capabilities_byte & 0x20)
                 if not quiet:
@@ -535,13 +553,16 @@ class SoulearCamera:
         """
         seq = self.next_sequence()
         payload = bytes([op_type & 0x0F, 0x00, 0x00])
-        packet = struct.pack(
-            "<IHIH",
-            MAGIC,
-            seq,
-            CMD_LED_STATUS_GET,
-            len(payload),
-        ) + payload
+        packet = (
+            struct.pack(
+                "<IHIH",
+                MAGIC,
+                seq,
+                CMD_LED_STATUS_GET,
+                len(payload),
+            )
+            + payload
+        )
 
         self.log(f"LED_GET: seq={seq} opType={op_type}")
         self.dbg(f"  TX: {packet.hex(' ')}")
@@ -560,11 +581,7 @@ class SoulearCamera:
 
         magic, rseq = struct.unpack_from("<IH", response, 0)
         cmd_low = struct.unpack_from("<H", response, 6)[0]
-        if (
-            magic != MAGIC
-            or rseq != seq
-            or cmd_low != (CMD_LED_STATUS_GET & 0xFFFF)
-        ):
+        if magic != MAGIC or rseq != seq or cmd_low != (CMD_LED_STATUS_GET & 0xFFFF):
             self.log(f"LED_GET: unerwarteter Header: {response.hex(' ')}")
             return None
 
@@ -578,17 +595,14 @@ class SoulearCamera:
         payload_len = struct.unpack_from("<H", response, 10)[0]
         if payload_len < 3 or len(response) < 12 + payload_len:
             self.log(
-                f"LED_GET: ungültige Payload-Länge {payload_len}: "
-                f"{response.hex(' ')}"
+                f"LED_GET: ungültige Payload-Länge {payload_len}: {response.hex(' ')}"
             )
             return None
 
-        rp = response[12:12 + payload_len]
+        rp = response[12 : 12 + payload_len]
         self.led_status = rp[1]
         self.led_value = rp[2]
-        self.log(
-            f"LED_GET: status={self.led_status}, value={self.led_value}"
-        )
+        self.log(f"LED_GET: status={self.led_status}, value={self.led_value}")
         return self.led_status, self.led_value
 
     def discover_led_op_type(self):
@@ -633,18 +647,23 @@ class SoulearCamera:
         #   byte1 = ledStatus
         #   byte2 = lightValue
         # and then reuses the LedStatusGet wire helper.
-        payload = bytes([
-            0x10 | (op_type & 0x0F),
-            led_status,
-            light_value,
-        ])
-        packet = struct.pack(
-            "<IHIH",
-            MAGIC,
-            seq,
-            CMD_LED_STATUS_SET,
-            len(payload),
-        ) + payload
+        payload = bytes(
+            [
+                0x10 | (op_type & 0x0F),
+                led_status,
+                light_value,
+            ]
+        )
+        packet = (
+            struct.pack(
+                "<IHIH",
+                MAGIC,
+                seq,
+                CMD_LED_STATUS_SET,
+                len(payload),
+            )
+            + payload
+        )
 
         label = "LED_ON" if enabled else "LED_OFF"
         self.log(
@@ -668,19 +687,14 @@ class SoulearCamera:
 
         magic, rseq = struct.unpack_from("<IH", response, 0)
         cmd_low = struct.unpack_from("<H", response, 6)[0]
-        if (
-            magic != MAGIC
-            or rseq != seq
-            or cmd_low != (CMD_LED_STATUS_SET & 0xFFFF)
-        ):
+        if magic != MAGIC or rseq != seq or cmd_low != (CMD_LED_STATUS_SET & 0xFFFF):
             self.log(f"{label}: unerwarteter Header: {response.hex(' ')}")
             return False
 
         fw_result = response[9]
         if fw_result != 0:
             self.log(
-                f"{label}: Firmware-Fehler {fw_result}; "
-                f"Antwort={response.hex(' ')}"
+                f"{label}: Firmware-Fehler {fw_result}; Antwort={response.hex(' ')}"
             )
             return False
 
@@ -804,10 +818,7 @@ class SoulearCamera:
             self.record_remote_error = firmware_result
             return False
 
-        self.log(
-            f"{label}: ACK bestätigt "
-            f"(echoed_status={echoed_status})"
-        )
+        self.log(f"{label}: ACK bestätigt (echoed_status={echoed_status})")
         self.record_remote_error = None
         return True
 
@@ -846,12 +857,17 @@ class SoulearCamera:
             cmd = [
                 ffmpeg,
                 "-hide_banner",
-                "-loglevel", "error",
+                "-loglevel",
+                "error",
                 "-y",
-                "-f", "image2pipe",
-                "-framerate", str(self.record_fps),
-                "-vcodec", "mjpeg",
-                "-i", "pipe:0",
+                "-f",
+                "image2pipe",
+                "-framerate",
+                str(self.record_fps),
+                "-vcodec",
+                "mjpeg",
+                "-i",
+                "pipe:0",
                 "-an",
             ]
             # Input is MJPEG in both modes. Auto-rotation re-encodes each
@@ -951,10 +967,7 @@ class SoulearCamera:
             self.record_seen_resolutions.add(current)
             self.record_frame_count += 1
 
-            if (
-                self.record_start_resolution
-                and current != self.record_start_resolution
-            ):
+            if self.record_start_resolution and current != self.record_start_resolution:
                 self.log(
                     "RECORDING RESOLUTION CHANGE: "
                     f"{self.record_start_resolution} -> {width}x{height}"
@@ -1078,9 +1091,7 @@ class SoulearCamera:
             0,
             self.video_port,
         )
-        self.log(
-            f"OPEN_VIDEO_FORCE({reason}): seq={seq} video_port={self.video_port}"
-        )
+        self.log(f"OPEN_VIDEO_FORCE({reason}): seq={seq} video_port={self.video_port}")
         self.dbg(f"  TX: {packet.hex(' ')}")
         response = self.sync_transaction(
             packet,
@@ -1111,12 +1122,8 @@ class SoulearCamera:
             return
         try:
             probe = bytes([0x66, 0x39, 0x01, 0x01])
-            self.presence_control2_socket.sendto(
-                probe, (self.broadcast_ip, 58090)
-            )
-            self.presence_control2_socket.sendto(
-                probe, (self.broadcast_ip, 46526)
-            )
+            self.presence_control2_socket.sendto(probe, (self.broadcast_ip, 58090))
+            self.presence_control2_socket.sendto(probe, (self.broadcast_ip, 46526))
             self.presence_control1_socket.sendto(
                 KEEPALIVE_CONTROL1,
                 (self.camera_ip, PRESENCE_CONTROL1_PORT),
@@ -1149,10 +1156,7 @@ class SoulearCamera:
                         KEEPALIVE_CONTROL1,
                         (self.broadcast_ip, PRESENCE_CONTROL1_PORT),
                     )
-                    self.dbg(
-                        "PRESENCE: 66 30 01 01 -> :46526; "
-                        "86 06 01 -> :52219"
-                    )
+                    self.dbg("PRESENCE: 66 30 01 01 -> :46526; 86 06 01 -> :52219")
                 except OSError as exc:
                     self.dbg(f"PRESENCE control error: {exc}")
                 next_control = now + 1.0
@@ -1198,7 +1202,10 @@ class SoulearCamera:
         try:
             result = subprocess.run(
                 ["ip", "route", "get", self.camera_ip],
-                check=True, capture_output=True, text=True, timeout=2,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=2,
             )
             match = re.search(r"\bdev\s+(\S+)", result.stdout)
             if match:
@@ -1206,9 +1213,7 @@ class SoulearCamera:
                 return self.interface
         except Exception:
             pass
-        raise RuntimeError(
-            "dumpcap mode needs a network interface; use --interface"
-        )
+        raise RuntimeError("dumpcap mode needs a network interface; use --interface")
 
     def start_dumpcap(self):
         dumpcap = shutil.which("dumpcap")
@@ -1221,10 +1226,14 @@ class SoulearCamera:
         command = [
             dumpcap,
             "-q",
-            "-F", "pcap",
-            "-i", interface,
-            "-s", "0",
-            "-w", "-",
+            "-F",
+            "pcap",
+            "-i",
+            interface,
+            "-s",
+            "0",
+            "-w",
+            "-",
         ]
         self.log("Capture:", " ".join(command))
         self.dumpcap_process = subprocess.Popen(
@@ -1300,9 +1309,7 @@ class SoulearCamera:
             if old is None:
                 self.last_camera_angle = angle
             if self.debug and (
-                old is None
-                or abs(angle - old) >= 2
-                or self.gyro_packet_count <= 5
+                old is None or abs(angle - old) >= 2 or self.gyro_packet_count <= 5
             ):
                 self.log(
                     f"GYRO52219 #{self.gyro_packet_count}: "
@@ -1336,7 +1343,7 @@ class SoulearCamera:
             return False
 
         declared_len = struct.unpack_from("<H", payload, 10)[0]
-        body = payload[12:12 + declared_len]
+        body = payload[12 : 12 + declared_len]
         if not body:
             return True
 
@@ -1358,10 +1365,7 @@ class SoulearCamera:
                 word9 = struct.unpack_from("<H", body, 9)[0]
                 byte11 = body[11]
                 byte16 = body[16]
-                extra = (
-                    f" ext9=0x{word9:04x} ext11=0x{byte11:02x} "
-                    f"ext16=0x{byte16:02x}"
-                )
+                extra = f" ext9=0x{word9:04x} ext11=0x{byte11:02x} ext16=0x{byte16:02x}"
 
             self.dbg(
                 f"NOTIFY #{self.notify_packet_count} cmd=0x00000009 "
@@ -1400,18 +1404,27 @@ class SoulearCamera:
                     continue
                 if i + 2 > n:
                     break
-                seglen = int.from_bytes(jpeg[i:i+2], "big")
+                seglen = int.from_bytes(jpeg[i : i + 2], "big")
                 if seglen < 2 or i + seglen > n:
                     break
                 if marker in (
-                    0xC0, 0xC1, 0xC2, 0xC3,
-                    0xC5, 0xC6, 0xC7,
-                    0xC9, 0xCA, 0xCB,
-                    0xCD, 0xCE, 0xCF,
+                    0xC0,
+                    0xC1,
+                    0xC2,
+                    0xC3,
+                    0xC5,
+                    0xC6,
+                    0xC7,
+                    0xC9,
+                    0xCA,
+                    0xCB,
+                    0xCD,
+                    0xCE,
+                    0xCF,
                 ):
                     if seglen >= 7:
-                        h = int.from_bytes(jpeg[i+3:i+5], "big")
-                        w = int.from_bytes(jpeg[i+5:i+7], "big")
+                        h = int.from_bytes(jpeg[i + 3 : i + 5], "big")
+                        w = int.from_bytes(jpeg[i + 5 : i + 7], "big")
                         return w, h
                 i += seglen
         except Exception:
@@ -1493,7 +1506,7 @@ class SoulearCamera:
             jpeg = jpeg[soi:]
         eoi = jpeg.rfind(JPEG_EOI)
         if eoi >= 0:
-            jpeg = jpeg[:eoi + 2]
+            jpeg = jpeg[: eoi + 2]
 
         if not jpeg.startswith(JPEG_SOI) or not jpeg.endswith(JPEG_EOI):
             self.log(
@@ -1534,20 +1547,18 @@ class SoulearCamera:
         if frame[ip_offset + 9] != 17:
             return
 
-        src_ip = socket.inet_ntoa(frame[ip_offset + 12:ip_offset + 16])
-        dst_ip = socket.inet_ntoa(frame[ip_offset + 16:ip_offset + 20])
+        src_ip = socket.inet_ntoa(frame[ip_offset + 12 : ip_offset + 16])
+        dst_ip = socket.inet_ntoa(frame[ip_offset + 16 : ip_offset + 20])
         if src_ip != self.camera_ip:
             return
 
         udp_offset = ip_offset + ihl
-        src_port, dst_port, udp_len = struct.unpack_from(
-            "!HHH", frame, udp_offset
-        )
+        src_port, dst_port, udp_len = struct.unpack_from("!HHH", frame, udp_offset)
         if udp_len < 8:
             return
 
         payload_offset = udp_offset + 8
-        payload = frame[payload_offset:payload_offset + udp_len - 8]
+        payload = frame[payload_offset : payload_offset + udp_len - 8]
         if not payload:
             return
 
@@ -1760,8 +1771,7 @@ class SoulearCamera:
                 self.current_height = height
                 self.current_camera_angle = camera_angle
                 if self.debug and (
-                    self.frame_count < 5
-                    or self.frame_count % self.jpeg_log_every == 0
+                    self.frame_count < 5 or self.frame_count % self.jpeg_log_every == 0
                 ):
                     self.log(
                         f"JPEG START frame={frame_id} seq={packet_sequence} "
@@ -1816,9 +1826,7 @@ class SoulearCamera:
             completed_frame_id = self.current_frame_id
             completed_width = self.current_width
             completed_height = self.current_height
-            completed_camera_angle = getattr(
-                self, "current_camera_angle", None
-            )
+            completed_camera_angle = getattr(self, "current_camera_angle", None)
             self.reset_jpeg_locked()
 
         if not jpeg.startswith(JPEG_SOI):
@@ -1833,7 +1841,7 @@ class SoulearCamera:
             self.update_stats()
             return
 
-        jpeg = jpeg[:eoi + 2]
+        jpeg = jpeg[: eoi + 2]
         self.emit_jpeg(
             jpeg,
             completed_frame_id,
@@ -1868,18 +1876,14 @@ class SoulearCamera:
     def send_nack(self, missing_sequences):
         missing = bytes(missing_sequences[:116])
         seq = self.next_sequence()
-        packet = (
-            struct.pack("<IHIH", MAGIC, seq, CMD_NACK, len(missing))
-            + missing
-        )
+        packet = struct.pack("<IHIH", MAGIC, seq, CMD_NACK, len(missing)) + missing
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             sock.sendto(packet, (self.camera_ip, CAMERA_CONTROL_PORT))
             sock.close()
             self.nack_count += 1
             self.dbg(
-                f"NACK #{self.nack_count}: protocol-seq={seq} "
-                f"missing={list(missing)}"
+                f"NACK #{self.nack_count}: protocol-seq={seq} missing={list(missing)}"
             )
         except OSError as exc:
             self.dbg(f"NACK error: {exc}")
@@ -1930,9 +1934,7 @@ class SoulearCamera:
         else:
             resolution_text = f"{jpeg_resolution[0]}x{jpeg_resolution[1]}"
 
-        resolution_changed = (
-            jpeg_resolution != self._last_logged_jpeg_resolution
-        )
+        resolution_changed = jpeg_resolution != self._last_logged_jpeg_resolution
         if (
             self.frame_count <= 10
             or self.frame_count % self.jpeg_log_every == 0
@@ -2058,9 +2060,7 @@ class SoulearCamera:
         with open(filename, "wb") as handle:
             handle.write(jpeg)
         suffix = " (auto-rotiert)" if self.auto_rotate else ""
-        self.signals.status.emit(
-            f"Gespeichert: {os.path.abspath(filename)}{suffix}"
-        )
+        self.signals.status.emit(f"Gespeichert: {os.path.abspath(filename)}{suffix}")
 
     # ------------------------------------------------------------------
     # Start / stop
@@ -2168,6 +2168,7 @@ class SoulearCamera:
 # GUI
 # ======================================================================
 
+
 class MainWindow(QMainWindow):
     def __init__(self, args):
         super().__init__()
@@ -2271,7 +2272,9 @@ class MainWindow(QMainWindow):
                     f"Videoaufnahme gestartet – {mode}; Auto-Rotation bis zum Stop gesperrt"
                 )
             else:
-                self.signals.status.emit("Lokale Videoaufnahme konnte nicht gestartet werden")
+                self.signals.status.emit(
+                    "Lokale Videoaufnahme konnte nicht gestartet werden"
+                )
                 self.signals.recording_state.emit(False)
 
         threading.Thread(target=worker, daemon=True).start()
@@ -2358,9 +2361,7 @@ class MainWindow(QMainWindow):
                 if len(q) < self.camera.gui_preview_target_buffer:
                     return
                 self.camera.gui_preview_started = True
-                self.camera.log(
-                    f"PREVIEW20: Start mit {len(q)} gepufferten Frames"
-                )
+                self.camera.log(f"PREVIEW20: Start mit {len(q)} gepufferten Frames")
 
             # A receive burst can briefly outrun the 20-Hz player. Keep only a
             # few recent frames so the preview never drifts seconds behind.
@@ -2371,8 +2372,7 @@ class MainWindow(QMainWindow):
                     q.popleft()
                     dropped += 1
                 self.camera.dbg(
-                    f"PREVIEW20: {dropped} alte Frames verworfen "
-                    f"(Latenzbegrenzung)"
+                    f"PREVIEW20: {dropped} alte Frames verworfen (Latenzbegrenzung)"
                 )
 
             if q:
@@ -2395,10 +2395,7 @@ class MainWindow(QMainWindow):
 
         pixmap = QPixmap.fromImage(image)
 
-        if (
-            self.camera.auto_rotate
-            and camera_angle is not None
-        ):
+        if self.camera.auto_rotate and camera_angle is not None:
             #  show only the centered circular region that is guaranteed
             # to exist for every rotation.  Render into a FIXED square canvas
             # so the visible circle never changes size at 0/45/90 degrees.
@@ -2452,6 +2449,7 @@ class MainWindow(QMainWindow):
 # Main
 # ======================================================================
 
+
 def main():
     parser = argparse.ArgumentParser(
         description="Linux client for Soulear/YPC Wi-Fi inspection cameras"
@@ -2462,40 +2460,52 @@ def main():
         help="Use optional dumpcap packet capture instead of normal UDP sockets",
     )
     parser.add_argument(
-        "--interface", "-i",
+        "--interface",
+        "-i",
         default=None,
         help="Interface for --dumpcap. If omitted, it is detected via the route "
-             "to --camera-ip",
+        "to --camera-ip",
     )
     parser.add_argument(
         "--local-ip",
         default="192.168.1.10",
-        help="Local IPv4 address used for UDP sockets "
-             "(default: 192.168.1.10)",
+        help="Local IPv4 address used for UDP sockets (default: 192.168.1.10)",
     )
     parser.add_argument(
-        "--camera-ip", "--camera",
+        "--camera-ip",
+        "--camera",
         dest="camera_ip",
         default="192.168.1.1",
         help="Camera IPv4 address (default: 192.168.1.1)",
     )
     parser.add_argument(
-        "--broadcast-ip", "--broadcast",
+        "--broadcast-ip",
+        "--broadcast",
         dest="broadcast_ip",
         default="192.168.1.255",
         help="Broadcast IPv4 address used by presence keepalives "
-             "(default: 192.168.1.255)",
+        "(default: 192.168.1.255)",
     )
-    parser.add_argument("--debug", action="store_true",
-                        help="Enable verbose protocol logging")
-    parser.add_argument("--no-keepalive", action="store_true",
-                        help="Disable legacy presence keepalives")
-    parser.add_argument("--no-online-monitor", action="store_true",
-                        help="Disable periodic CHECK_ONLINE")
-    parser.add_argument("--no-force-fallback", action="store_true",
-                        help="Disable OPEN_VIDEO_FORCE fallback")
-    parser.add_argument("--no-auto-reopen", action="store_true",
-                        help="Disable stream watchdog reopen")
+    parser.add_argument(
+        "--debug", action="store_true", help="Enable verbose protocol logging"
+    )
+    parser.add_argument(
+        "--no-keepalive", action="store_true", help="Disable legacy presence keepalives"
+    )
+    parser.add_argument(
+        "--no-online-monitor", action="store_true", help="Disable periodic CHECK_ONLINE"
+    )
+    parser.add_argument(
+        "--no-force-fallback",
+        action="store_true",
+        help="Disable OPEN_VIDEO_FORCE fallback",
+    )
+    parser.add_argument(
+        "--no-auto-reopen", action="store_true", help="Disable stream watchdog reopen"
+    )
+    parser.add_argument(
+        "-V", "--version", action="version", version=f"hopefox-ypc-linux {__version__}"
+    )
     args = parser.parse_args()
 
     app = QApplication(sys.argv)

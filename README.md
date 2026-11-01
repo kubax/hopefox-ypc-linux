@@ -59,10 +59,12 @@ sudo pacman -S python-pyside6 ffmpeg
 `dumpcap` is **optional** and only useful for protocol diagnostics. Normal preview
 and control use ordinary UDP sockets and do not require packet-capture privileges.
 
-## Run without installation
+## Run with uv
+
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/), then run:
 
 ```bash
-python ./soulear-camera.py
+uv run soulear-camera
 ```
 
 Defaults match the tested camera/AP setup:
@@ -74,7 +76,7 @@ Defaults match the tested camera/AP setup:
 Override them when necessary:
 
 ```bash
-python ./soulear-camera.py \
+uv run soulear-camera \
   --local-ip 192.168.1.20 \
   --camera-ip 192.168.1.1 \
   --broadcast-ip 192.168.1.255
@@ -83,16 +85,15 @@ python ./soulear-camera.py \
 See all options:
 
 ```bash
-python ./soulear-camera.py --help
+uv run soulear-camera --help
 ```
 
-## Install in a virtual environment
+`uv run` creates and synchronizes the project environment automatically. To
+prepare it explicitly, use:
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -e .
-soulear-camera
+uv sync
+uv run soulear-camera
 ```
 
 ## Optional packet capture
