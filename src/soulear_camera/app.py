@@ -590,6 +590,7 @@ class SoulearCamera:
         label : str
             Name used in diagnostics for this receiver.
         """
+        received_count = 0
         while self.running:
             try:
                 payload, address = sock.recvfrom(65535)
@@ -602,7 +603,9 @@ class SoulearCamera:
                     self.log(f"{label} receive error: {exc}")
                 return
 
+            received_count += 1
             src_ip, src_port = address[0], address[1]
+            self.log_video_socket_sample(label, received_count, local_port, src_ip, src_port, payload)
             if src_ip != self.camera_ip:
                 continue
             frame = self._build_synthetic_udp_frame(src_ip, src_port, local_port, payload)
@@ -616,6 +619,18 @@ class SoulearCamera:
                         import traceback
 
                         traceback.print_exc()
+
+    def log_video_socket_sample(
+        self, label: str, count: int, local_port: int, src_ip: str, src_port: int, payload: bytes
+    ) -> None:
+        """Log a small sample of raw video-socket traffic in debug mode."""
+        if not (self.debug and label.startswith("video-") and count <= 5):
+            return
+        self.log(
+            f"UDP RX {label} #{count}: {src_ip}:{src_port} -> "
+            f"{self.local_ip}:{local_port} len={len(payload)} "
+            f"data={payload[:20].hex(' ')}"
+        )
 
     def start_socket_receivers(self) -> None:
         """Start daemon receiver threads for all available UDP sockets."""
@@ -1004,7 +1019,7 @@ class SoulearCamera:
         if camera_angle is None:
             return jpeg
 
-        image = QImage.fromData(jpeg, b"JPEG")
+        image = QImage.fromData(jpeg)
         if image.isNull():
             self.log("EXPORT_ROTATE: JPEG konnte nicht dekodiert werden")
             return jpeg
@@ -2124,17 +2139,29 @@ class SoulearCamera:
             Video transport header and fragment bytes.
         """
         if len(payload) < VIDEO_HEADER_SIZE:
+            if self.debug and self.raw_packet_count <= 5:
+                self.dbg(f"VIDEO reject: short packet len={len(payload)} from {src_ip}:{src_port}")
             return
 
         # Validate a Soulear video header rather than relying only on the
         # malformed UDP destination. Native receiver accepts types 1,2,5,6.
         stream_type = payload[0]
         if stream_type not in (1, 2, 5, 6):
+            if self.debug and self.raw_packet_count <= 5:
+                self.dbg(
+                    f"VIDEO reject: type=0x{stream_type:02x} from {src_ip}:{src_port} "
+                    f"to {dst_ip}:{dst_port} len={len(payload)} hdr={payload[:16].hex(' ')}"
+                )
             return
 
         width = struct.unpack_from("<H", payload, 12)[0]
         height = struct.unpack_from("<H", payload, 14)[0]
         if not (16 <= width <= 4096 and 16 <= height <= 4096):
+            if self.debug and self.raw_packet_count <= 5:
+                self.dbg(
+                    f"VIDEO reject: dimensions={width}x{height} from {src_ip}:{src_port} "
+                    f"to {dst_ip}:{dst_port} len={len(payload)} hdr={payload[:16].hex(' ')}"
+                )
             return
 
         # Diagnostic capture can see stale streams from earlier sessions too.
@@ -3079,7 +3106,7 @@ class MainWindow(QMainWindow):
         camera_angle : float | None, optional
             Relative rotation angle in degrees for auto-rotated display.
         """
-        image = QImage.fromData(jpeg, b"JPEG")
+        image = QImage.fromData(jpeg)
         if image.isNull():
             print("Qt konnte JPEG nicht dekodieren", flush=True)
             return
