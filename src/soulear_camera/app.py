@@ -23,6 +23,7 @@ from PySide6.QtCore import (
     QBuffer,
     QByteArray,
     QIODevice,
+    QLoggingCategory,
     QObject,
     QRectF,
     Qt,
@@ -3263,6 +3264,8 @@ def main() -> None:
         level=getattr(logging, args.loglevel),
         format="%(levelname)s: %(message)s",
     )
+    if args.loglevel != "DEBUG":
+        QLoggingCategory.setFilterRules("qt.qpa.wayland.textinput.warning=false")
 
     app = QApplication(sys.argv)
     window = MainWindow(args)

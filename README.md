@@ -36,8 +36,9 @@ confirmed.
 - auto-rotation is locked for the duration of an active video recording
 - stream watchdog / automatic reopen
 - camera presence keepalives
+- camera connectivity checks before LED and recording-control commands
 - configurable camera, local and broadcast IPv4 addresses
-- reduced diagnostic logging suitable for longer sessions
+- configurable standard logging levels for concise or detailed diagnostics
 
 The tested YPC camera produces an actual **480×480 JPEG stream**. Its transport
 header advertises 640×480; the client intentionally trusts the JPEG SOF
@@ -46,7 +47,7 @@ dimensions instead.
 ## Requirements
 
 - Linux
-- Python 3.10+
+- Python 3.12+
 - PySide6
 - `ffmpeg` for video recording
 
@@ -88,6 +89,14 @@ See all options:
 uv run soulear-camera --help
 ```
 
+Logging defaults to `INFO`. Choose a different level with `--loglevel`:
+
+```bash
+uv run soulear-camera --loglevel DEBUG
+```
+
+Supported levels are `DEBUG`, `INFO`, `WARNING` and `ERROR`.
+
 `uv run` creates and synchronizes the project environment automatically. To
 prepare it explicitly, use:
 
@@ -112,7 +121,6 @@ If needed, override it explicitly:
 soulear-camera --dumpcap --interface wlan0
 ```
 
-
 ## Auto-rotation and saved media
 
 Auto-rotation affects both the live preview and exported media. When enabled:
@@ -130,17 +138,30 @@ between rotated and unrotated frames.
 
 The camera acts as a Wi-Fi access point. The tested device uses:
 
-| Purpose | Address / port |
-|---|---|
-| Camera | `192.168.1.1` |
-| Tested Linux host | `192.168.1.10` |
-| Command/control | UDP `10005` |
-| Video open/control | UDP `10006` |
-| Notification stream | UDP `10007` |
-| Presence | UDP `44506`, `52219`, `52220` |
-| Presence broadcast | UDP `46526` |
+| Purpose             | Address / port                |
+| ------------------- | ----------------------------- |
+| Camera              | `192.168.1.1`                 |
+| Tested Linux host   | `192.168.1.10`                |
+| Command/control     | UDP `10005`                   |
+| Video open/control  | UDP `10006`                   |
+| Notification stream | UDP `10007`                   |
+| Presence            | UDP `44506`, `52219`, `52220` |
+| Presence broadcast  | UDP `46526`                   |
 
 More detail is in [docs/protocol.md](docs/protocol.md).
+
+## Firewall
+
+If a host firewall is enabled, allow incoming UDP traffic from the camera to the
+local address across the dynamic video receive port range:
+
+```bash
+sudo ufw allow in from 192.168.1.1 to 192.168.1.10 port 32768:60999 proto udp
+```
+
+Replace `192.168.1.1` and `192.168.1.10` with the camera and local IP addresses
+used by your setup. No firewall rule is needed when incoming UDP traffic is
+already allowed.
 
 ## Resolution
 
