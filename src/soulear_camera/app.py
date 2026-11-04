@@ -1019,7 +1019,7 @@ class SoulearCamera:
         if camera_angle is None:
             return jpeg
 
-        image = QImage.fromData(jpeg)
+        image = QImage.fromData(jpeg, format="JPEG")  # ty: ignore[invalid-argument-type]
         if image.isNull():
             self.log("EXPORT_ROTATE: JPEG konnte nicht dekodiert werden")
             return jpeg
@@ -3106,7 +3106,7 @@ class MainWindow(QMainWindow):
         camera_angle : float | None, optional
             Relative rotation angle in degrees for auto-rotated display.
         """
-        image = QImage.fromData(jpeg)
+        image = QImage.fromData(jpeg, format="JPEG")  # ty: ignore[invalid-argument-type]
         if image.isNull():
             print("Qt konnte JPEG nicht dekodieren", flush=True)
             return
