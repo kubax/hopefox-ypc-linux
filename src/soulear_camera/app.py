@@ -6,6 +6,7 @@ import math
 import os
 import re
 import shutil
+import signal
 import socket
 import struct
 import subprocess
@@ -291,6 +292,7 @@ class SoulearCamera:
         self.auto_reopen = auto_reopen
 
         self.running = False
+        self.camera_connected = False
         self.reconfiguring = False
         self.seq_lock = threading.Lock()
         self.protocol_sequence = 1
@@ -511,7 +513,7 @@ class SoulearCamera:
                 self.presence_control2_socket = self.make_bound_broadcast_socket(PRESENCE_CONTROL2_PORT)
                 self.logger.info("Presence sockets:     44506, 52219, 52220")
             except OSError as exc:
-                self.logger.warning(f'Presence sockets unavailable: {exc}')
+                self.logger.warning(f"Presence sockets unavailable: {exc}")
                 self.keepalives_enabled = False
 
     def _build_synthetic_udp_frame(self, src_ip: str, src_port: int, dst_port: int, payload: bytes) -> bytes:
@@ -666,23 +668,22 @@ class SoulearCamera:
         bytes | None
             Matching response, or ``None`` after all attempts time out.
 
-        Raises
-        ------
-        OSError
-            If the temporary UDP socket cannot be created, bound, or used.
         """
         # cameraRecordStatusSync uses a temporary UDP socket for the sync
         # exchange. Reproduce that behavior rather than retaining a command
         # socket between calls.
         with self.command_lock:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            sock.bind((self.local_ip, 0))
-            sock.settimeout(timeout)
-            local_port = sock.getsockname()[1]
-
-            self.logger.debug(f"{label}: local UDP :{local_port} -> {self.camera_ip}:{destination_port}  {packet.hex(' ')}")
-
+            sock = None
             try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                sock.bind((self.local_ip, 0))
+                sock.settimeout(timeout)
+                local_port = sock.getsockname()[1]
+
+                self.logger.debug(
+                    f"{label}: local UDP :{local_port} -> {self.camera_ip}:{destination_port}  {packet.hex(' ')}"
+                )
+
                 for attempt in range(1, retries + 1):
                     try:
                         sock.sendto(packet, (self.camera_ip, destination_port))
@@ -705,8 +706,13 @@ class SoulearCamera:
                         f"{address[0]}:{address[1]}  {response[:32].hex(' ')}"
                     )
                     return response
+            except OSError as exc:
+                self.logger.warning("%s UDP transaction failed: %s", label, exc)
+                return None
             finally:
-                sock.close()
+                if sock is not None:
+                    with suppress(OSError):
+                        sock.close()
 
         return None
 
@@ -727,10 +733,6 @@ class SoulearCamera:
         bool
             Whether the camera returned a matching response.
 
-        Raises
-        ------
-        OSError
-            If the command socket cannot be used.
         """
         seq = self.next_sequence()
         packet = struct.pack("<IHIH", MAGIC, seq, CMD_CHECK_ONLINE, 0)
@@ -742,10 +744,11 @@ class SoulearCamera:
             retries=3 if quiet else 6,
             label="CHECK_ONLINE",
         )
+        self.camera_connected = response is not None
 
         if response is None:
             if not quiet:
-                self.logger.warning('CHECK_ONLINE: no response; will still try opening video')
+                self.logger.warning("CHECK_ONLINE: no response; will still try opening video")
             return False
 
         if not quiet:
@@ -767,6 +770,18 @@ class SoulearCamera:
                         f"time-sync={'ja' if self.capabilities_byte & 0x10 else 'nein'}"
                     )
         return True
+
+    def ensure_camera_connected(self) -> bool:
+        """Verify camera availability before an explicit camera command."""
+        if not self.running:
+            self.camera_connected = False
+            self.logger.warning("Camera command skipped: client is not running")
+            return False
+        self.camera_connected = self.camera_check_online(quiet=True)
+        if not self.camera_connected:
+            self.logger.warning("Camera command skipped: camera is not connected")
+            return False
+        return self.camera_connected
 
     # ------------------------------------------------------------------
     # LED / illumination
@@ -793,11 +808,10 @@ class SoulearCamera:
         tuple[int, int] | None
             LED state and brightness, or ``None`` if the response is invalid.
 
-        Raises
-        ------
-        OSError
-            If the command socket cannot be used.
         """
+        if not self.ensure_camera_connected():
+            return None
+
         seq = self.next_sequence()
         payload = bytes([op_type & 0x0F, 0x00, 0x00])
         packet = (
@@ -823,7 +837,7 @@ class SoulearCamera:
             label="LED_GET",
         )
         if response is None or len(response) < 15:
-            self.logger.warning('LED_GET: no or short response')
+            self.logger.warning("LED_GET: no or short response")
             return None
 
         magic, rseq = struct.unpack_from("<IH", response, 0)
@@ -836,7 +850,7 @@ class SoulearCamera:
         # camera commands.
         fw_result = response[9]
         if fw_result != 0:
-            self.logger.warning(f'LED_GET: firmware error {fw_result}')
+            self.logger.warning(f"LED_GET: firmware error {fw_result}")
             return None
 
         payload_len = struct.unpack_from("<H", response, 10)[0]
@@ -862,10 +876,6 @@ class SoulearCamera:
         int | None
             First readable operation type, or ``None`` if none responds.
 
-        Raises
-        ------
-        OSError
-            If a command socket cannot be used during probing.
         """
         if self.led_op_type is not None:
             return self.led_op_type
@@ -900,11 +910,10 @@ class SoulearCamera:
         bool
             Whether the camera acknowledged the command.
 
-        Raises
-        ------
-        OSError
-            If the command socket cannot be used.
         """
+        if not self.ensure_camera_connected():
+            return False
+
         # Confirmed on the tested camera: opType=1, state 0/1 and
         # brightness/value 0/100 over command 0x0001000A.
         op_type = 1
@@ -951,7 +960,7 @@ class SoulearCamera:
             label=label,
         )
         if response is None or len(response) < 10:
-            self.logger.warning(f'{label}: no valid response')
+            self.logger.warning(f"{label}: no valid response")
             return False
 
         magic, rseq = struct.unpack_from("<IH", response, 0)
@@ -998,7 +1007,7 @@ class SoulearCamera:
 
         image = QImage.fromData(jpeg, format="JPEG")  # ty: ignore[invalid-argument-type]
         if image.isNull():
-            self.logger.error('EXPORT_ROTATE: JPEG decode failed')
+            self.logger.error("EXPORT_ROTATE: JPEG decode failed")
             return jpeg
 
         side = min(image.width(), image.height())
@@ -1023,12 +1032,12 @@ class SoulearCamera:
         encoded = QByteArray()
         buffer = QBuffer(encoded)
         if not buffer.open(QIODevice.OpenModeFlag.WriteOnly):
-            self.logger.error('EXPORT_ROTATE: could not open QBuffer')
+            self.logger.error("EXPORT_ROTATE: could not open QBuffer")
             return jpeg
         ok = output.save(buffer, b"JPEG", 95)
         buffer.close()
         if not ok:
-            self.logger.error('EXPORT_ROTATE: JPEG encoding failed')
+            self.logger.error("EXPORT_ROTATE: JPEG encoding failed")
             return jpeg
         return bytes(encoded.data())
 
@@ -1052,11 +1061,11 @@ class SoulearCamera:
         bool
             Whether the camera acknowledged the status command.
 
-        Raises
-        ------
-        OSError
-            If the command socket cannot be used.
         """
+        if not self.ensure_camera_connected():
+            self.record_remote_error = "offline"
+            return False
+
         status = 1 if recording else 0
         seq = self.next_sequence()
         packet = struct.pack(
@@ -1081,7 +1090,7 @@ class SoulearCamera:
             label=label,
         )
         if response is None or len(response) < 10:
-            self.logger.warning(f'{label}: no valid response')
+            self.logger.warning(f"{label}: no valid response")
             self.record_remote_error = "timeout"
             return False
 
@@ -1092,12 +1101,16 @@ class SoulearCamera:
         echoed_status = response[12] if len(response) >= 13 else None
 
         if magic != MAGIC or rseq != seq or cmd_low != expected_low:
-            self.logger.warning(f'{label}: unexpected response header magic=0x{magic:08x} seq={rseq} cmd_low=0x{cmd_low:04x}')
+            self.logger.warning(
+                f"{label}: unexpected response header magic=0x{magic:08x} seq={rseq} cmd_low=0x{cmd_low:04x}"
+            )
             self.record_remote_error = "bad-header"
             return False
 
         if firmware_result != 0:
-            self.logger.warning(f'{label}: Firmware lehnt optionalen RecordStatusSync ab (code={firmware_result}, echoed_status={echoed_status}). Local recording can continue.')
+            self.logger.warning(
+                f"{label}: Firmware lehnt optionalen RecordStatusSync ab (code={firmware_result}, echoed_status={echoed_status}). Local recording can continue."
+            )
             self.record_remote_error = firmware_result
             return False
 
@@ -1151,7 +1164,7 @@ class SoulearCamera:
                 self.record_start_resolution = self.last_jpeg_resolution
                 self.record_seen_resolutions = set()
                 self.record_frame_count = 0
-                self.logger.warning('RECORD_START: ffmpeg not found; local video file will not be created')
+                self.logger.warning("RECORD_START: ffmpeg not found; local video file will not be created")
                 return True
 
             cmd = [
@@ -1225,7 +1238,9 @@ class SoulearCamera:
                 remote_ok = self.camera_record_status_sync(False)
             else:
                 remote_ok = False
-                self.logger.debug('RECORD_SYNC_STOP: übersprungen, weil Firmware den RecordStatusSync beim Start nicht unterstützt hat.')
+                self.logger.debug(
+                    "RECORD_SYNC_STOP: übersprungen, weil Firmware den RecordStatusSync beim Start nicht unterstützt hat."
+                )
 
             proc = self.record_ffmpeg
             output = self.record_output_path
@@ -1254,7 +1269,7 @@ class SoulearCamera:
                     except Exception:
                         err = ""
                     if err:
-                        self.logger.error(f'RECORD_STOP: ffmpeg: {err}')
+                        self.logger.error(f"RECORD_STOP: ffmpeg: {err}")
 
             self.logger.info(
                 f"RECORD_STOP: frames={self.record_frame_count}, "
@@ -1319,11 +1334,10 @@ class SoulearCamera:
         bool
             Whether the camera acknowledged the time command.
 
-        Raises
-        ------
-        OSError
-            If the command socket cannot be used.
         """
+        if not self.ensure_camera_connected():
+            return False
+
         now = time.localtime()
         seq = self.next_sequence()
         packet = struct.pack(
@@ -1350,7 +1364,7 @@ class SoulearCamera:
         if response is not None:
             self.logger.info("SET_TIME: bestätigt")
             return True
-        self.logger.warning('SET_TIME: no acknowledgement')
+        self.logger.warning("SET_TIME: no acknowledgement")
         return False
 
     # ------------------------------------------------------------------
@@ -1370,10 +1384,6 @@ class SoulearCamera:
         bool
             Whether the camera acknowledged the open request.
 
-        Raises
-        ------
-        OSError
-            If the command socket cannot be used.
         """
         seq = self.next_sequence()
 
@@ -1415,7 +1425,7 @@ class SoulearCamera:
             self.signals.status.emit("Normaler Videostream geöffnet")
             return True
 
-        self.logger.warning('OPEN_VIDEO(normal): no acknowledgement')
+        self.logger.warning("OPEN_VIDEO(normal): no acknowledgement")
         return False
 
     # ------------------------------------------------------------------
@@ -1435,10 +1445,6 @@ class SoulearCamera:
         bool
             Whether the camera acknowledged the open request.
 
-        Raises
-        ------
-        OSError
-            If the command socket cannot be used.
         """
         seq = self.next_sequence()
         packet = struct.pack(
@@ -1465,7 +1471,7 @@ class SoulearCamera:
             self.logger.info(f"OPEN_VIDEO_FORCE: ACK ({len(response)} Bytes)")
             self.signals.status.emit("Force-Videopfad geöffnet")
             return True
-        self.logger.warning('OPEN_VIDEO_FORCE: no acknowledgement')
+        self.logger.warning("OPEN_VIDEO_FORCE: no acknowledgement")
         return False
 
     def send_ne7_probe(self) -> None:
@@ -1497,7 +1503,7 @@ class SoulearCamera:
             )
             self.logger.debug("NE7 probe: 66 39 01 01 -> :58090/:46526; 86 06 01 -> :52219; 20 36 -> :44506")
         except OSError as exc:
-            self.logger.warning(f'NE7 probe failed: {exc}')
+            self.logger.warning(f"NE7 probe failed: {exc}")
 
     def keepalive_loop(self) -> None:
         """Send periodic camera-presence datagrams while the client is running."""
@@ -1524,7 +1530,7 @@ class SoulearCamera:
                     )
                     self.logger.debug("PRESENCE: 66 30 01 01 -> :46526; 86 06 01 -> :52219")
                 except OSError as exc:
-                    self.logger.warning(f'PRESENCE control send failed: {exc}')
+                    self.logger.warning(f"PRESENCE control send failed: {exc}")
                     return
                 next_control = now + 1.0
 
@@ -1536,7 +1542,7 @@ class SoulearCamera:
                     )
                     self.logger.debug("PRESENCE: 20 36 -> :44506")
                 except OSError as exc:
-                    self.logger.warning(f'PRESENCE video send failed: {exc}')
+                    self.logger.warning(f"PRESENCE video send failed: {exc}")
                     return
                 next_video = now + 3.0
 
@@ -1555,7 +1561,7 @@ class SoulearCamera:
                 ok = self.camera_check_online(quiet=True)
                 self.logger.debug(f"ONLINE monitor: {'ok' if ok else 'no response'}")
             except Exception as exc:
-                self.logger.warning(f'ONLINE monitor failed: {exc}')
+                self.logger.warning(f"ONLINE monitor failed: {exc}")
             for _ in range(30):
                 if not self.running:
                     return
@@ -1626,7 +1632,7 @@ class SoulearCamera:
             "-w",
             "-",
         ]
-        self.logger.debug('%s %s', 'Capture:', ' '.join(command))
+        self.logger.debug("%s %s", "Capture:", " ".join(command))
         self.dumpcap_process = subprocess.Popen(  # noqa: S603
             command,
             stdout=subprocess.PIPE,
@@ -1922,7 +1928,9 @@ class SoulearCamera:
         elif frame_number != self.legacy_frame_number:
             # New frame started before the old one completed.
             if self.legacy_chunks:
-                self.logger.debug(f"LEGACY44506: frame jump {self.legacy_frame_number}->{frame_number}; old frame dropped")
+                self.logger.debug(
+                    f"LEGACY44506: frame jump {self.legacy_frame_number}->{frame_number}; old frame dropped"
+                )
             self.reset_legacy_frame(frame_number)
 
         self.legacy_chunks[chunk_number - 1] = data
@@ -1955,7 +1963,9 @@ class SoulearCamera:
         present = set(self.legacy_chunks.keys())
         missing = sorted(expected - present)
         if missing:
-            self.logger.warning(f'LEGACY44506: frame {frame_number} incomplete; missing chunks={[x + 1 for x in missing]}')
+            self.logger.warning(
+                f"LEGACY44506: frame {frame_number} incomplete; missing chunks={[x + 1 for x in missing]}"
+            )
             self.reset_legacy_frame()
             return
 
@@ -1970,7 +1980,7 @@ class SoulearCamera:
             jpeg = jpeg[: eoi + 2]
 
         if not jpeg.startswith(JPEG_SOI) or not jpeg.endswith(JPEG_EOI):
-            self.logger.warning(f'LEGACY44506: frame {frame_number} is not a complete JPEG ({len(jpeg)} bytes)')
+            self.logger.warning(f"LEGACY44506: frame {frame_number} is not a complete JPEG ({len(jpeg)} bytes)")
             return
 
         width, height = self.jpeg_dimensions(jpeg)
@@ -2281,7 +2291,7 @@ class SoulearCamera:
         eoi = jpeg.rfind(JPEG_EOI)
         if eoi < 0:
             self.dropped_frames += 1
-            self.logger.warning(f'Frame {completed_frame_id}: LAST without JPEG EOI')
+            self.logger.warning(f"Frame {completed_frame_id}: LAST without JPEG EOI")
             self.update_stats()
             return
 
@@ -2454,7 +2464,7 @@ class SoulearCamera:
 
             if len(self.jpeg_buffer) > MAX_JPEG_SIZE:
                 self.dropped_frames += 1
-                self.logger.warning('JPEG exceeded 5 MiB; frame dropped')
+                self.logger.warning("JPEG exceeded 5 MiB; frame dropped")
                 self.reset_jpeg_locked()
                 self.update_stats()
                 return
@@ -2476,7 +2486,9 @@ class SoulearCamera:
         now = time.monotonic()
         if now - self._last_packet_loss_log_time < 10.0:
             return
-        self.logger.warning(f'Video packet loss: {self._packet_loss_events} missing packets; latest frame={frame_id}, expected={expected}, received={received}')
+        self.logger.warning(
+            f"Video packet loss: {self._packet_loss_events} missing packets; latest frame={frame_id}, expected={expected}, received={received}"
+        )
         self._packet_loss_events = 0
         self._last_packet_loss_log_time = now
 
@@ -2603,9 +2615,7 @@ class SoulearCamera:
 
         resolution_changed = jpeg_resolution != self._last_logged_jpeg_resolution
         if resolution_changed:
-            self.logger.info(
-                f"Video stream active: {resolution_text}"
-            )
+            self.logger.info(f"Video stream active: {resolution_text}")
             self._last_logged_jpeg_resolution = jpeg_resolution
         elif self.frame_count <= 10 or self.frame_count % self.jpeg_log_every == 0:
             self.logger.debug(
@@ -2683,7 +2693,7 @@ class SoulearCamera:
         """
         # Give normal proOpenVideo time to answer and produce data.
         if not self.first_video_event.wait(1.0) and self.running and self.fallback_force:
-            self.logger.warning('No video after normal open; trying the force-open fallback once')
+            self.logger.warning("No video after normal open; trying the force-open fallback once")
             try:
                 self.open_video_force("no-video-fallback")
             except OSError:
@@ -2707,7 +2717,7 @@ class SoulearCamera:
                 continue
 
             self.last_reopen_time = now
-            self.logger.warning(f'Video stream stalled for {idle:.1f}s; reopening')
+            self.logger.warning(f"Video stream stalled for {idle:.1f}s; reopening")
             try:
                 self.open_video_normal("watchdog")
             except OSError:
@@ -2750,6 +2760,7 @@ class SoulearCamera:
         if self.running:
             return
         self.running = True
+        self.camera_connected = False
 
         try:
             self.create_native_sockets()
@@ -2799,6 +2810,15 @@ class SoulearCamera:
             )
             self.watchdog_thread.start()
 
+        except OSError as exc:
+            self.logger.log(
+                logging.ERROR,
+                "START ERROR: network setup failed for local IP %s: %s",
+                self.local_ip,
+                exc,
+            )
+            self.signals.status.emit(f"Startfehler: {exc}")
+            self.stop()
         except Exception as exc:
             self.logger.exception("START ERROR")
             self.signals.status.emit(f"Startfehler: {exc}")
@@ -2813,8 +2833,10 @@ class SoulearCamera:
                 self.logger.exception("RECORD_STOP during shutdown failed")
 
         if not self.running:
+            self.camera_connected = False
             return
         self.running = False
+        self.camera_connected = False
         self.logger.info("Stopping Soulear...")
 
         for sock in (
@@ -3218,6 +3240,7 @@ def main() -> None:
         help="Broadcast IPv4 address used by presence keepalives (default: 192.168.1.255)",
     )
     parser.add_argument(
+        "-l",
         "--loglevel",
         type=str.upper,
         choices=("DEBUG", "INFO", "WARNING", "ERROR"),
@@ -3244,6 +3267,7 @@ def main() -> None:
     app = QApplication(sys.argv)
     window = MainWindow(args)
     window.show()
+    signal.signal(signal.SIGINT, lambda _signum, _frame: window.close())
     sys.exit(app.exec())
 
 
