@@ -1,1 +1,1 @@
-__version__ = "0.1.0"
+"""Linux client package for Hopefox-branded Soulear/YPC inspection cameras."""
